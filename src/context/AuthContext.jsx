@@ -11,10 +11,20 @@
 //   - refreshProfile()     :: re-fetches the profile row (use after updates)
 //
 // PROFILE FETCH FLOW:
-//   1. Supabase auth event fires (initial getSession OR onAuthStateChange).
+//   1. onAuthStateChange fires (INITIAL_SESSION on load, then SIGNED_IN /
+//      SIGNED_OUT / TOKEN_REFRESHED as they happen).
 //   2. We grab user.id and SELECT * FROM profiles WHERE id = user.id.
 //   3. The DB trigger `on_auth_user_created` ensures this row always exists
 //      for any signed-up user, so a missing row = real error worth logging.
+//
+// ⚠️  DEADLOCK WARNING — READ BEFORE EDITING THE useEffect BELOW:
+//   The onAuthStateChange callback MUST stay synchronous. Do NOT mark it
+//   `async` and do NOT `await` any supabase.* call directly inside it.
+//   signInWithPassword() holds an internal lock while it runs this callback;
+//   an awaited supabase call inside the callback waits on that same lock,
+//   which never releases → signInWithPassword() hangs forever and the login
+//   button is stuck on "Signing in…". Defer all supabase calls with
+//   setTimeout(fn, 0) so they run AFTER the callback returns.
 // =============================================================================
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
@@ -42,39 +52,34 @@ export function AuthProvider({ children }) {
     return data
   }
 
-  // ---- Bootstrap: load any existing session, then subscribe to changes -----
+  // ---- Subscribe to auth state. This single subscription covers the initial
+  //      session load (INITIAL_SESSION) AND every later change. ---------------
   useEffect(() => {
     let isMounted = true
 
-    const initAuth = async () => {
-      const { data: { session: currentSession } } = await supabase.auth.getSession()
-      if (!isMounted) return
-
-      setSession(currentSession)
-      setUser(currentSession?.user ?? null)
-
-      if (currentSession?.user) {
-        const profileData = await fetchProfile(currentSession.user.id)
-        if (isMounted) setProfile(profileData)
-      }
-      if (isMounted) setLoading(false)
-    }
-
-    initAuth()
-
-    // onAuthStateChange fires on SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, etc.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, newSession) => {
+      // NOTE: intentionally NOT async. See the DEADLOCK WARNING at the top.
+      (_event, newSession) => {
+        // Synchronous state updates only — safe to do directly.
         setSession(newSession)
         setUser(newSession?.user ?? null)
 
         if (newSession?.user) {
-          const profileData = await fetchProfile(newSession.user.id)
-          setProfile(profileData)
+          // Defer the supabase DB call out of the callback so the auth lock
+          // is released first. setTimeout(fn, 0) pushes it to the next tick.
+          setTimeout(async () => {
+            const profileData = await fetchProfile(newSession.user.id)
+            if (isMounted) {
+              setProfile(profileData)
+              setLoading(false)
+            }
+          }, 0)
         } else {
-          setProfile(null)
+          if (isMounted) {
+            setProfile(null)
+            setLoading(false)
+          }
         }
-        setLoading(false)
       }
     )
 
