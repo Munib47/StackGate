@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* StackGate base — always dark, never flashes white on load. */
+html, body, #root {
+  background-color: #09090b;
+  color: #f4f4f5;
+  min-height: 100%;
+}
