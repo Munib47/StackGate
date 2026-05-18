@@ -6,25 +6,12 @@
 //   - profile              :: row from public.profiles (role, phase, etc.)
 //   - loading              :: true while the initial session is being resolved
 //   - login(email, pwd)    :: throws on error
-//   - signup(email, pwd, fullName) :: throws on error; trigger creates profile
+//   - signup({ email, password, firstName, lastName, requestedRole })
+//                          :: throws on error; trigger creates profile
 //   - logout()             :: clears session
 //   - refreshProfile()     :: re-fetches the profile row (use after updates)
 //
-// PROFILE FETCH FLOW:
-//   1. onAuthStateChange fires (INITIAL_SESSION on load, then SIGNED_IN /
-//      SIGNED_OUT / TOKEN_REFRESHED as they happen).
-//   2. We grab user.id and SELECT * FROM profiles WHERE id = user.id.
-//   3. The DB trigger `on_auth_user_created` ensures this row always exists
-//      for any signed-up user, so a missing row = real error worth logging.
-//
-// ⚠️  DEADLOCK WARNING — READ BEFORE EDITING THE useEffect BELOW:
-//   The onAuthStateChange callback MUST stay synchronous. Do NOT mark it
-//   `async` and do NOT `await` any supabase.* call directly inside it.
-//   signInWithPassword() holds an internal lock while it runs this callback;
-//   an awaited supabase call inside the callback waits on that same lock,
-//   which never releases → signInWithPassword() hangs forever and the login
-//   button is stuck on "Signing in…". Defer all supabase calls with
-//   setTimeout(fn, 0) so they run AFTER the callback returns.
+// ⚠️  DEADLOCK WARNING — see comment in the useEffect below before editing.
 // =============================================================================
 import { createContext, useContext, useEffect, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
@@ -37,14 +24,12 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  // ---- Helper: fetch the profiles row for a given user id ------------------
   const fetchProfile = async (userId) => {
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
       .eq('id', userId)
       .single()
-
     if (error) {
       console.error('[Auth] fetchProfile error:', error.message)
       return null
@@ -52,21 +37,20 @@ export function AuthProvider({ children }) {
     return data
   }
 
-  // ---- Subscribe to auth state. This single subscription covers the initial
-  //      session load (INITIAL_SESSION) AND every later change. ---------------
   useEffect(() => {
     let isMounted = true
 
+    // NOTE: callback is intentionally NOT async. See deadlock warning above.
+    // Supabase holds an internal lock while running this callback; awaiting a
+    // supabase.* call inside it would deadlock with signInWithPassword().
+    // setTimeout(fn, 0) defers the DB call to the next tick after the lock
+    // is released.
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      // NOTE: intentionally NOT async. See the DEADLOCK WARNING at the top.
       (_event, newSession) => {
-        // Synchronous state updates only — safe to do directly.
         setSession(newSession)
         setUser(newSession?.user ?? null)
 
         if (newSession?.user) {
-          // Defer the supabase DB call out of the callback so the auth lock
-          // is released first. setTimeout(fn, 0) pushes it to the next tick.
           setTimeout(async () => {
             const profileData = await fetchProfile(newSession.user.id)
             if (isMounted) {
@@ -96,13 +80,26 @@ export function AuthProvider({ children }) {
     return data
   }
 
-  const signup = async (email, password, fullName) => {
-    // full_name is passed via raw_user_meta_data; the handle_new_user()
-    // SQL trigger reads it when creating the profiles row.
+  // signup now takes an object so we can pass first/last name + requested role
+  // without a long positional argument list. The fields land in
+  // raw_user_meta_data and are read by the handle_new_user() SQL trigger.
+  //
+  // IMPORTANT: requestedRole here is just the user's PREFERENCE. The trigger
+  // always sets profiles.role = 'internee' regardless. Only owner approval
+  // (Round 3) can promote to admin.
+  const signup = async ({ email, password, firstName, lastName, requestedRole }) => {
+    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim()
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { full_name: fullName } },
+      options: {
+        data: {
+          first_name: firstName,
+          last_name: lastName,
+          full_name: fullName,
+          requested_role: requestedRole,
+        },
+      },
     })
     if (error) throw error
     return data
@@ -128,11 +125,8 @@ export function AuthProvider({ children }) {
   )
 }
 
-// ---- Custom hook for clean consumption: const { user } = useAuth() --------
 export const useAuth = () => {
   const context = useContext(AuthContext)
-  if (!context) {
-    throw new Error('useAuth must be used inside <AuthProvider>')
-  }
+  if (!context) throw new Error('useAuth must be used inside <AuthProvider>')
   return context
 }
