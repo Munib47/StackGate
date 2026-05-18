@@ -11,6 +11,8 @@ import ProtectedRoute from './components/ProtectedRoute'
 import Login from './pages/Login'
 import Register from './pages/Register'
 import Dashboard from './pages/Dashboard'
+import Quizzes from './pages/Quizzes'
+import Quiz from './pages/Quiz'
 
 export default function App() {
   return (
@@ -30,8 +32,25 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/quizzes"
+            element={
+              <ProtectedRoute>
+                <Quizzes />
+              </ProtectedRoute>
+            }
+          />
+          {/* Quiz runner — full-screen focus mode, takes the phase as a param */}
+          <Route
+            path="/quiz/:phase"
+            element={
+              <ProtectedRoute>
+                <Quiz />
+              </ProtectedRoute>
+            }
+          />
 
-          {/* Root + 404 → dashboard (ProtectedRoute will bounce to /login if unauthed) */}
+          {/* Root + 404 → dashboard (ProtectedRoute bounces to /login if unauthed) */}
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
