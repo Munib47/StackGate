@@ -46,6 +46,7 @@ eslint.config.js
 index.html
 package.json
 postcss.config.js
+PROJECT_CONTEXT.md
 public/favicon.svg
 public/icons.svg
 README.md
@@ -60,6 +61,8 @@ src/components/ProtectedRoute.jsx
 src/components/quiz/CanvasQuestion.jsx
 src/components/quiz/QuizTimer.jsx
 src/context/AuthContext.jsx
+src/hooks/useQuizSession.js
+src/hooks/useQuizSession.test.js
 src/index.css
 src/lib/supabaseClient.jsx
 src/main.jsx
@@ -77,6 +80,247 @@ vite.config.js
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="PROJECT_CONTEXT.md">
+# StackGate — Project Context File
+> **Single source of truth.** Updated at the end of every significant session.
+> At session start, paste this file or say "read the context file."
+> Roles: Lead Trainer · Senior Developer · Tester
+
+---
+
+## 1. Executive Summary
+
+**StackGate** is a proctored internee assessment and training platform. Interns progress through four web-dev phases — HTML → CSS → JavaScript → Shopify Liquid — by passing timed, server-graded quizzes. Owners and admins manage interns, approve admin role requests, and monitor flagged quiz attempts.
+
+The platform is in active early development. Core auth, quiz runner, and dashboard are built. The three planned management pages (`/tasks`, `/team`, `/settings`) are routed but not implemented.
+
+**Stack:** React 19 · Vite 8 · Tailwind CSS 3 · Supabase (Auth + Postgres + RPCs) · React Router 7  
+**Deployment:** Vercel (`vercel.json` configured for SPA routing)  
+**No TypeScript** — plain JS throughout.
+
+---
+
+## 2. Tech Architecture Reference
+
+### Routing (`src/App.jsx`)
+| Route | Component | Access |
+|---|---|---|
+| `/login` | Login.jsx | Public |
+| `/register` | Register.jsx | Public |
+| `/dashboard` | Dashboard.jsx | Protected |
+| `/quizzes` | Quizzes.jsx | Protected |
+| `/quiz/:phase` | Quiz.jsx | Protected |
+| `/notifications` | Notifications.jsx | Protected |
+| `/tasks` | — | Stubbed → redirects to `/dashboard` |
+| `/team` | — | Stubbed → redirects to `/dashboard` |
+| `/settings` | — | Stubbed → redirects to `/dashboard` |
+
+### File Tree (key files only)
+```
+src/
+  App.jsx                         # Root router + AuthProvider wrapper
+  context/
+    AuthContext.jsx               # session, user, profile, login, signup, logout, refreshProfile
+  lib/
+    supabaseClient.jsx            # Supabase client (fail-fast guard if env vars missing)
+  pages/
+    Login.jsx
+    Register.jsx
+    Dashboard.jsx                 # Welcome + phase strip + DeadlineCard + RoadmapPanel
+    Quizzes.jsx                   # Phase listing, lock/unlock gating
+    Quiz.jsx                      # Pure render — all logic delegated to useQuizSession
+    Notifications.jsx             # Owner/admin — flagged auto-submitted attempts
+  hooks/
+    useQuizSession.js             # Full quiz state machine (loading→active→done/auto/error)
+    useQuizSession.test.js        # Vitest test suite (see Testing section)
+  components/
+    ProtectedRoute.jsx
+    layout/
+      DashboardLayout.jsx         # Sidebar + navbar shell shared by all protected pages
+    quiz/
+      CanvasQuestion.jsx          # Question + optional code snippet renderer
+      QuizTimer.jsx               # Per-question countdown, fires onExpire
+    common/
+      Loader.jsx
+  utils/
+    constants.js                  # ROLES, PHASES, PHASE_LABELS, ROLE_LABELS, PHASE_ROADMAP,
+                                  # QUIZ_PASS_THRESHOLD, QUIZ_TIME_LIMIT_SECONDS
+```
+
+### Database (`public.profiles` table)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID | FK → auth.users.id |
+| `email` | TEXT | |
+| `full_name` | TEXT | |
+| `first_name` | TEXT | |
+| `last_name` | TEXT | |
+| `role` | `user_role` enum | `owner \| admin \| internee` — set by trigger, never by client |
+| `requested_role` | `user_role` enum | What the user asked to be at signup |
+| `admin_approval_status` | `admin_approval_state` enum | `pending \| approved \| rejected` — NULL for internees |
+| `admin_approval_token` | UUID | Approval link token minted at signup for admin requests |
+| `approval_requested_at` | TIMESTAMPTZ | |
+| `current_phase` | `phase_type` enum | `html \| css \| js \| liquid` — defaults to `html` |
+| `unlocked_phases` | `phase_type[]` | NOT NULL — defaults to `{html}` |
+| `phase_deadlines` | JSONB | `{"html": {"start_date": "YYYY-MM-DD", "deadline": "YYYY-MM-DD"}}` |
+
+**Custom enums:**
+- `user_role`: `owner`, `admin`, `internee`
+- `phase_type`: `html`, `css`, `js`, `liquid`
+- `admin_approval_state`: `pending`, `approved`, `rejected`
+
+### Database Functions / RPCs
+| Name | Trigger / RPC | Purpose |
+|---|---|---|
+| `handle_new_user()` | AFTER INSERT ON auth.users | Creates `public.profiles` row from `raw_user_meta_data` |
+| `get_quiz_questions(p_phase)` | RPC | Returns questions with `correct_option_index` stripped |
+| `grade_quiz_attempt(...)` | RPC | Grades server-side, returns score/pass/unlock info |
+
+### Auth Pattern
+- `supabase.auth.signUp()` → GoTrue creates `auth.users` row → `handle_new_user` trigger fires → `public.profiles` row created.
+- `AuthContext` uses `onAuthStateChange` (intentionally NOT async — deadlock guard documented in the file).
+- `fetchProfile` does `select('*')` — any new column added to `profiles` automatically appears in `profile` without AuthContext changes.
+- `refreshProfile()` re-fetches the profile row (call after grading a quiz to reflect unlocked phases).
+
+---
+
+## 3. Feature Timeline (Chronological)
+
+| # | Session | Feature | Status |
+|---|---|---|---|
+| 1 | S1 | Project scaffold: React 19 + Vite + Tailwind + Supabase + React Router | ✅ Done |
+| 2 | S1 | Auth system: Login, Register, AuthContext, ProtectedRoute | ✅ Done |
+| 3 | S1 | `handle_new_user` DB trigger (creates profile on signup) | ✅ Done |
+| 4 | S1 | First/last name fields + `requested_role` added to signup | ✅ Done |
+| 5 | S1 | Admin approval workflow: pending status + approval token minted at signup | ✅ Done |
+| 6 | S1 | Core pages: Dashboard, Quizzes, Quiz runner, Notifications | ✅ Done |
+| 7 | S1 | DashboardLayout: sidebar + navbar shell | ✅ Done |
+| 8 | S1 | Tab-switch enforcement in quiz (1st → warning, 2nd → auto-submit) | ✅ Done |
+| 9 | S2 | Removed unused `resend` dependency (API key exposure risk) | ✅ Done |
+| 10 | S2 | Refactored Quiz.jsx: extracted all state logic into `useQuizSession.js` hook | ✅ Done |
+| 11 | S2 | Fixed dead-code ternary bug in Quiz.jsx line 134 | ✅ Done |
+| 12 | S2 | Vitest test suite for `useQuizSession` (12 test cases, stale-ref safety covered) | ✅ Done |
+| 13 | S2 | Fixed `handle_new_user` trigger: NOT NULL violation on `unlocked_phases` | ✅ Done |
+| 14 | S3 | Added `phase_deadlines JSONB` column to `public.profiles` | ✅ Done |
+| 15 | S3 | Added `PHASE_ROADMAP` to `constants.js` (7 topics per phase) | ✅ Done |
+| 16 | S3 | Dashboard: `DeadlineCard` component (days remaining + progress bar) | ✅ Done |
+| 17 | S3 | Dashboard: `RoadmapPanel` component (collapsible topic checklist) | ✅ Done |
+
+---
+
+## 4. Current Phase
+
+**Phase: Dashboard Enhancement — COMPLETE**
+
+The dashboard now shows all internee-facing content:
+1. Welcome card with current phase name
+2. Phase progression strip (HTML / CSS / JS / Liquid — locked/unlocked/current states)
+3. `DeadlineCard` — renders only when `phase_deadlines[phase]` is set in the DB; color-coded green → amber → red by urgency; progress bar if `start_date` is also stored
+4. `RoadmapPanel` — always visible for internees; collapsible; 7 curriculum topics per phase from `PHASE_ROADMAP` constant; zero DB fetch
+5. Quick action tiles (My Tasks, Take a quiz, Manage team for owner/admin)
+
+**Next up: `/tasks` page** — Interns view assigned tasks and submit documentation.
+
+---
+
+## 5. Pending Tasks / Backlog
+
+### High Priority
+- [ ] **`/tasks` page** — Intern view: list of tasks assigned by admin, ability to submit task documentation/links. Requires a `tasks` table (schema TBD).
+- [ ] **`/team` page** — Owner/admin view: list all interns, see current phase, assign tasks, view quiz history. Pending `tasks` table design.
+- [ ] **Admin approval UI** — Owner dashboard: approve or reject pending admin requests (currently only via Supabase Table Editor). Token-based approval link already exists in the DB.
+
+### Medium Priority
+- [ ] **`/settings` page** — User profile settings (name, password change).
+- [ ] **Admin: Set phase deadlines UI** — Currently set via Supabase Table Editor. Needs an owner/admin form that writes to `phase_deadlines` JSONB via an RPC or direct update.
+- [ ] **Vitest setup** — Dependencies not yet installed. Run: `npm install --save-dev vitest @testing-library/react @testing-library/jest-dom jsdom`. Add `test: { environment: 'jsdom', globals: true }` to `vite.config.js`.
+
+### Low Priority / Future
+- [ ] **RoadmapPanel: per-topic completion tracking** — Let interns check off topics as they study. Requires either a DB column or localStorage. Not requested yet.
+- [ ] **Quiz attempt history** — Show past attempts (score, date, pass/fail) on the Quizzes page.
+- [ ] **TypeScript migration** — No TS currently. Worth adding if team grows.
+- [ ] **Email confirmation flow** — Supabase email confirmation may be on/off; confirm intended behavior for production.
+
+---
+
+## 6. Known Issues / Debugging Log
+
+| # | Issue | Root Cause | Resolution | Status |
+|---|---|---|---|---|
+| 1 | "Database error saving new user" on registration | `handle_new_user` trigger INSERT omitted `unlocked_phases` (NOT NULL column) and `current_phase`. Postgres threw a constraint violation; GoTrue wrapped it as the generic error. | Rewrote trigger INSERT to explicitly include `current_phase = 'html'::phase_type` and `unlocked_phases = ARRAY['html'::phase_type]`. | ✅ Fixed |
+| 2 | Dead-code ternary in Quiz.jsx | `setStatus(autoSubmitted ? 'submitting' : 'submitting')` — both branches identical. No functional bug but misleads the reader. | Removed ternary; `submitQuiz` now calls `setStatus('submitting')` directly. | ✅ Fixed |
+| 3 | Stale closure in `visibilitychange` handler | Handler registered once (keyed to `questions` array). Any function it closes over becomes stale after re-renders. | Used `submitQuizRef` pattern: ref is reassigned every render (`submitQuizRef.current = submitQuiz`); handler calls `submitQuizRef.current()`, never a stale copy. | ✅ Resolved by design |
+| 4 | `resend` package in dependencies | Never imported in `src/` but was in `package.json`. Risk: a future dev might import it client-side and expose the API key in the browser bundle. | Ran `npm uninstall resend`. | ✅ Removed |
+
+---
+
+## 7. Architecture Invariants (Do Not Break)
+
+These are non-obvious rules that must be preserved when adding features:
+
+1. **Auth callback must stay synchronous.** `onAuthStateChange` in `AuthContext` holds a Supabase internal lock. Awaiting any `supabase.*` call inside the callback deadlocks `signInWithPassword`. The `setTimeout(fn, 0)` deferral is intentional — do not remove it.
+
+2. **Quiz answers never reach the client.** `get_quiz_questions` RPC strips `correct_option_index` server-side. Never add a query that fetches raw question rows with answers from the client.
+
+3. **Role is always set by the DB trigger, never by client code.** `handle_new_user` hardcodes `role = 'internee'`. Only the owner can promote a user to admin via the approval workflow. Client code must never write to the `role` column.
+
+4. **`select('*')` in `fetchProfile` is intentional.** Adding columns to `profiles` automatically surfaces them in `profile` throughout the app. Do not switch to a column list without auditing every consumer.
+
+5. **`useQuizSession` owns all quiz state.** `Quiz.jsx` is pure render. Do not add business logic, timers, or state back into the component — put it in the hook.
+
+6. **`phase_deadlines` JSONB structure:** `{ "<phase>": { "start_date": "YYYY-MM-DD", "deadline": "YYYY-MM-DD" } }`. `start_date` is optional (DeadlineCard hides the progress bar if absent). `deadline` is required for the card to render.
+
+---
+
+## 8. Testing Reference
+
+**Test file:** `src/hooks/useQuizSession.test.js`  
+**Runner:** Vitest (not yet installed — see Pending Tasks)
+
+**Install command:**
+```bash
+npm install --save-dev vitest @testing-library/react @testing-library/jest-dom jsdom
+```
+
+**`vite.config.js` addition needed:**
+```js
+test: {
+  environment: 'jsdom',
+  globals: true,
+}
+```
+
+**Coverage:** loading states, answer recording, double-advance guard, timer expiry (−1 answers), tab-switch warning, tab-switch auto-submit, stale-ref safety, RPC error handling.
+
+**Run tests:**
+```bash
+npm run test
+```
+
+---
+
+## 9. Environment & Local Dev
+
+**Required `.env` variables** (copy from `.env.example`):
+```
+VITE_SUPABASE_URL=https://your-project-ref.supabase.co
+VITE_SUPABASE_ANON_KEY=your-anon-key-here
+```
+
+Both variables are validated at startup — the app throws immediately if either is missing.
+
+**Dev server:**
+```bash
+npm run dev        # http://localhost:5173
+npm run build      # production build → dist/
+npm run preview    # preview the dist/ build locally
+```
+
+---
+
+*Last updated: 2026-06-06 · Session 3*
+</file>
 
 <file path=".env.example">
 VITE_SUPABASE_URL=https://your-project-ref.supabase.co
@@ -654,6 +898,564 @@ export default function QuizTimer({ seconds, questionKey, onExpire }) {
     </div>
   )
 }
+</file>
+
+<file path="src/hooks/useQuizSession.js">
+// =============================================================================
+// useQuizSession — quiz state machine
+// -----------------------------------------------------------------------------
+// Owns all quiz logic: question loading, answer recording, tab-switch
+// enforcement, and server-side grading. Quiz.jsx is left as pure render code.
+//
+// PARAMS:
+//   phase           :: string   — route param, e.g. 'html'
+//   profile         :: object   — from AuthContext (role, unlocked_phases, etc.)
+//   onProfileRefresh:: fn       — called after a passing attempt to sync context
+//
+// RETURNS:
+//   status          :: 'loading' | 'active' | 'warning' | 'submitting' |
+//                      'done' | 'auto' | 'error'
+//   errorMsg        :: string
+//   questions       :: array
+//   index           :: number   — 0-based index of the current question
+//   result          :: object | null — from grade_quiz_attempt RPC
+//   tabSwitchesRef  :: MutableRefObject<number> — read .current in render
+//   handleSelect    :: (optionIndex: number) => void
+//   handleExpire    :: () => void
+//   resumeFromWarning :: () => void
+//
+// STALE-CLOSURE SAFETY:
+//   The visibilitychange handler is registered once per `questions` change and
+//   reads state via refs (statusRef, answersRef) that are synced on every
+//   render. submitQuiz is also mirrored into submitQuizRef so the handler
+//   always calls the latest version without needing to be re-registered.
+// =============================================================================
+import { useState, useEffect, useRef } from 'react'
+import { supabase } from '../lib/supabaseClient'
+import { PHASES, PHASE_LABELS } from '../utils/constants'
+
+const VALID_PHASES = Object.values(PHASES)
+
+export function useQuizSession(phase, profile, onProfileRefresh) {
+  const [status, setStatus]       = useState('loading')
+  const [errorMsg, setErrorMsg]   = useState('')
+  const [questions, setQuestions] = useState([])
+  const [index, setIndex]         = useState(0)
+  const [answers, setAnswers]     = useState({})
+  const [result, setResult]       = useState(null)
+
+  // Persistent refs that survive re-renders without triggering them.
+  const tabSwitchesRef = useRef(0)
+  const startTimeRef   = useRef(null)
+  const advancingRef   = useRef(false)   // guard: prevents double-advance
+  const didLoadRef     = useRef(false)   // guard: prevents double-load
+
+  // Snapshot refs — updated every render so event handlers always have
+  // the latest values without being re-registered.
+  const statusRef      = useRef(status)
+  const answersRef     = useRef(answers)
+  // submitQuizRef lets the visibilitychange handler always call the latest
+  // version of submitQuiz (which closes over `phase`) without rebinding.
+  const submitQuizRef  = useRef(null)
+
+  // Sync snapshot refs after every render (intentionally no dep array).
+  useEffect(() => {
+    statusRef.current  = status
+    answersRef.current = answers
+  })
+
+  // Reset guards when phase or index changes.
+  useEffect(() => { advancingRef.current = false }, [index])
+  useEffect(() => { didLoadRef.current   = false }, [phase])
+
+  // ---- question loading -----------------------------------------------------
+  useEffect(() => {
+    let cancelled = false
+
+    const load = async () => {
+      if (didLoadRef.current) return
+
+      setStatus('loading')
+      setErrorMsg('')
+
+      if (!VALID_PHASES.includes(phase)) {
+        setErrorMsg('Unknown quiz phase.')
+        setStatus('error')
+        return
+      }
+
+      if (profile?.role === 'internee') {
+        const unlocked = profile?.unlocked_phases || []
+        if (!unlocked.includes(phase)) {
+          setErrorMsg(
+            `The ${PHASE_LABELS[phase]} phase is locked. Pass the previous phase to unlock it.`
+          )
+          setStatus('error')
+          return
+        }
+      }
+
+      const { data, error } = await supabase.rpc('get_quiz_questions', { p_phase: phase })
+      if (cancelled) return
+
+      if (error) {
+        setErrorMsg(error.message || 'Could not load questions.')
+        setStatus('error')
+        return
+      }
+      if (!data || data.length === 0) {
+        setErrorMsg('No questions are available for this phase yet.')
+        setStatus('error')
+        return
+      }
+
+      didLoadRef.current      = true
+      tabSwitchesRef.current  = 0
+      startTimeRef.current    = Date.now()
+      setQuestions(data)
+      setIndex(0)
+      setAnswers({})
+      setStatus('active')
+    }
+
+    load()
+    return () => { cancelled = true }
+  }, [phase, profile])
+
+  // ---- submission -----------------------------------------------------------
+  const submitQuiz = async (finalAnswers, autoSubmitted = false, reason = null) => {
+    setStatus('submitting')
+
+    const totalTime = startTimeRef.current
+      ? Math.round((Date.now() - startTimeRef.current) / 1000)
+      : null
+
+    const { data, error } = await supabase.rpc('grade_quiz_attempt', {
+      p_phase:              phase,
+      p_answers:            finalAnswers,
+      p_cheat_signals:      { tab_switches: tabSwitchesRef.current },
+      p_total_time_seconds: totalTime,
+      p_auto_submitted:     autoSubmitted,
+      p_auto_submit_reason: reason,
+    })
+
+    if (error) {
+      setErrorMsg(error.message || 'Could not submit the quiz.')
+      setStatus('error')
+      return
+    }
+
+    setResult(data)
+    setStatus(autoSubmitted ? 'auto' : 'done')
+    if (data?.passed) onProfileRefresh?.()
+  }
+
+  // Keep the ref current every render so the visibility handler always calls
+  // the latest closure (which captures the current `phase`).
+  submitQuizRef.current = submitQuiz
+
+  // ---- answer recording & advance ------------------------------------------
+  const advance = (selectedIndex) => {
+    if (status !== 'active' || advancingRef.current) return
+    const current = questions[index]
+    if (!current) return
+    advancingRef.current = true
+
+    const updated = { ...answers, [current.id]: selectedIndex }
+    setAnswers(updated)
+
+    if (index + 1 < questions.length) {
+      setIndex((i) => i + 1)
+    } else {
+      submitQuiz(updated, false, null)
+    }
+  }
+
+  const handleSelect = (optionIndex) => advance(optionIndex)
+  const handleExpire = ()            => advance(-1)
+
+  // ---- tab-switch enforcement -----------------------------------------------
+  useEffect(() => {
+    // Fill unanswered questions with -1 (skipped) for partial auto-submission.
+    const buildFinalAnswers = () => {
+      const complete = { ...answersRef.current }
+      for (const q of questions) {
+        if (!(q.id in complete)) complete[q.id] = -1
+      }
+      return complete
+    }
+
+    const onVis = () => {
+      if (!document.hidden) return
+      const s = statusRef.current
+      if (s !== 'active' && s !== 'warning') return
+
+      tabSwitchesRef.current += 1
+
+      if (tabSwitchesRef.current === 1) {
+        setStatus('warning')
+      } else {
+        // Second strike: auto-submit via ref so we always call the latest
+        // submitQuiz closure without re-registering this handler.
+        submitQuizRef.current(buildFinalAnswers(), true, 'tab_switch_x2')
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+    // Only `questions` is needed — all other reads go through refs.
+  }, [questions])
+
+  // ---- public surface -------------------------------------------------------
+  return {
+    status,
+    errorMsg,
+    questions,
+    index,
+    result,
+    tabSwitchesRef,
+    handleSelect,
+    handleExpire,
+    resumeFromWarning: () => setStatus('active'),
+  }
+}
+</file>
+
+<file path="src/hooks/useQuizSession.test.js">
+// =============================================================================
+// useQuizSession — unit tests
+// =============================================================================
+// Setup: this project uses Vite, so Vitest is the natural test runner.
+//
+//   npm install --save-dev vitest @testing-library/react @testing-library/jest-dom jsdom
+//
+// Add to package.json scripts:
+//   "test": "vitest"
+//
+// Add to vite.config.js (or vitest.config.js):
+//   test: { environment: 'jsdom', globals: true }
+// =============================================================================
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { renderHook, act, waitFor } from '@testing-library/react'
+import { useQuizSession } from './useQuizSession'
+
+// ---------------------------------------------------------------------------
+// Supabase mock — controls what the RPC calls return per test
+// ---------------------------------------------------------------------------
+const mockRpc = vi.fn()
+vi.mock('../lib/supabaseClient', () => ({
+  supabase: { rpc: mockRpc },
+}))
+
+const MOCK_QUESTIONS = [
+  { id: 'q1', question_text: 'What is HTML?', code_snippet: null, options: [{ id: 0, text: 'A' }, { id: 1, text: 'B' }, { id: 2, text: 'C' }, { id: 3, text: 'D' }], time_limit_seconds: 45 },
+  { id: 'q2', question_text: 'What is CSS?',  code_snippet: null, options: [{ id: 0, text: 'A' }, { id: 1, text: 'B' }, { id: 2, text: 'C' }, { id: 3, text: 'D' }], time_limit_seconds: 45 },
+]
+
+const MOCK_RESULT = { passed: true, score: 100, correct: 2, total: 2, threshold: 80, results: { q1: true, q2: true } }
+
+const UNLOCKED_PROFILE = {
+  role: 'internee',
+  unlocked_phases: ['html', 'css', 'js', 'liquid'],
+}
+
+const OWNER_PROFILE = { role: 'owner' }
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  // Default: questions load fine, grading returns a pass.
+  mockRpc.mockImplementation((rpcName) => {
+    if (rpcName === 'get_quiz_questions') return Promise.resolve({ data: MOCK_QUESTIONS, error: null })
+    if (rpcName === 'grade_quiz_attempt') return Promise.resolve({ data: MOCK_RESULT, error: null })
+    return Promise.resolve({ data: null, error: null })
+  })
+})
+
+afterEach(() => {
+  // Clean up any dangling visibility listeners.
+  document.dispatchEvent(new Event('visibilitychange'))
+})
+
+// ---------------------------------------------------------------------------
+// 1. Initial load
+// ---------------------------------------------------------------------------
+describe('question loading', () => {
+  it('transitions loading → active after questions fetch', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+
+    expect(result.current.status).toBe('loading')
+    await waitFor(() => expect(result.current.status).toBe('active'))
+    expect(result.current.questions).toHaveLength(2)
+    expect(result.current.index).toBe(0)
+  })
+
+  it('transitions loading → error for an unknown phase', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('unknown', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('error'))
+    expect(result.current.errorMsg).toMatch(/unknown quiz phase/i)
+  })
+
+  it('transitions loading → error for a locked phase', async () => {
+    const lockedProfile = { role: 'internee', unlocked_phases: ['html'] }
+    const { result } = renderHook(() =>
+      useQuizSession('css', lockedProfile, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('error'))
+    expect(result.current.errorMsg).toMatch(/locked/i)
+  })
+
+  it('owners bypass the phase-lock check', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', OWNER_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+  })
+
+  it('sets error when RPC returns no questions', async () => {
+    mockRpc.mockResolvedValueOnce({ data: [], error: null })
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('error'))
+    expect(result.current.errorMsg).toMatch(/no questions/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2. Answer recording and normal completion
+// ---------------------------------------------------------------------------
+describe('answer recording', () => {
+  it('advances index when an option is selected', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.index).toBe(1))
+  })
+
+  it('calls grade_quiz_attempt with all answers after the last question', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    act(() => result.current.handleSelect(1))  // answer q1
+    await waitFor(() => expect(result.current.index).toBe(1))
+
+    act(() => result.current.handleSelect(2))  // answer q2 — should trigger submit
+    await waitFor(() => expect(result.current.status).toBe('done'))
+
+    expect(mockRpc).toHaveBeenCalledWith('grade_quiz_attempt', expect.objectContaining({
+      p_phase: 'html',
+      p_auto_submitted: false,
+    }))
+  })
+
+  it('calls onProfileRefresh when the quiz is passed', async () => {
+    const refresh = vi.fn()
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, refresh)
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.index).toBe(1))
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.status).toBe('done'))
+
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('does NOT call onProfileRefresh when the quiz is failed', async () => {
+    mockRpc.mockImplementation((rpcName) => {
+      if (rpcName === 'get_quiz_questions') return Promise.resolve({ data: MOCK_QUESTIONS, error: null })
+      if (rpcName === 'grade_quiz_attempt') return Promise.resolve({
+        data: { passed: false, score: 50, correct: 1, total: 2, threshold: 80, results: { q1: true, q2: false } },
+        error: null,
+      })
+    })
+    const refresh = vi.fn()
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, refresh)
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.index).toBe(1))
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.status).toBe('done'))
+
+    expect(refresh).not.toHaveBeenCalled()
+  })
+
+  it('records a -1 answer (skipped) when the timer expires', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    act(() => result.current.handleExpire())
+    await waitFor(() => expect(result.current.index).toBe(1))
+
+    act(() => result.current.handleExpire())
+    await waitFor(() => expect(result.current.status).toBe('done'))
+
+    const call = mockRpc.mock.calls.find(([name]) => name === 'grade_quiz_attempt')
+    const answers = call[1].p_answers
+    expect(Object.values(answers)).toEqual([-1, -1])
+  })
+
+  it('double-advance guard prevents two answers for one question', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    // Fire twice synchronously — only the first should count.
+    act(() => {
+      result.current.handleSelect(0)
+      result.current.handleSelect(1)
+    })
+    await waitFor(() => expect(result.current.index).toBe(1))
+
+    // Now answer the last question to get the grade call.
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.status).toBe('done'))
+
+    const call = mockRpc.mock.calls.find(([name]) => name === 'grade_quiz_attempt')
+    // q1 should have answer 0 (first click), not 1 (second click).
+    expect(call[1].p_answers['q1']).toBe(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3. Tab-switch enforcement — the critical stale-ref tests
+// ---------------------------------------------------------------------------
+describe('tab-switch enforcement', () => {
+  const fireTabSwitch = () => {
+    Object.defineProperty(document, 'hidden', { value: true, configurable: true })
+    document.dispatchEvent(new Event('visibilitychange'))
+    Object.defineProperty(document, 'hidden', { value: false, configurable: true })
+  }
+
+  it('sets status to warning on first tab switch', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    act(() => fireTabSwitch())
+    expect(result.current.status).toBe('warning')
+  })
+
+  it('resumeFromWarning returns status to active', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    act(() => fireTabSwitch())
+    expect(result.current.status).toBe('warning')
+
+    act(() => result.current.resumeFromWarning())
+    expect(result.current.status).toBe('active')
+  })
+
+  it('auto-submits with p_auto_submitted: true on second tab switch', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    act(() => fireTabSwitch())  // first: warning
+    act(() => result.current.resumeFromWarning())
+    act(() => fireTabSwitch())  // second: auto-submit
+
+    await waitFor(() => expect(result.current.status).toBe('auto'))
+
+    const call = mockRpc.mock.calls.find(([name]) => name === 'grade_quiz_attempt')
+    expect(call[1].p_auto_submitted).toBe(true)
+    expect(call[1].p_auto_submit_reason).toBe('tab_switch_x2')
+  })
+
+  it('fills unanswered questions with -1 on auto-submit', async () => {
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    // Answer only q1, then double-switch with q2 still open.
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.index).toBe(1))
+
+    act(() => fireTabSwitch())
+    act(() => result.current.resumeFromWarning())
+    act(() => fireTabSwitch())
+
+    await waitFor(() => expect(result.current.status).toBe('auto'))
+
+    const call = mockRpc.mock.calls.find(([name]) => name === 'grade_quiz_attempt')
+    const answers = call[1].p_answers
+    expect(answers['q1']).toBe(0)   // answered
+    expect(answers['q2']).toBe(-1)  // skipped, filled by buildFinalAnswers
+  })
+
+  // --- Stale-ref safety test -----------------------------------------------
+  // This test validates the core reason submitQuizRef exists.
+  // Scenario: the user loads phase 'html', the visibility handler is registered,
+  // then somehow the hook re-renders with a new phase without re-registering
+  // (which can't happen in normal use, but tests the contract).
+  // The handler must always call the LATEST submitQuiz, not the stale one.
+  it('visibilitychange handler calls the latest submitQuiz after re-render', async () => {
+    const { result, rerender } = renderHook(
+      ({ phase }) => useQuizSession(phase, OWNER_PROFILE, vi.fn()),
+      { initialProps: { phase: 'html' } }
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+
+    // Spy on the rpc call AFTER questions are loaded to assert the phase used.
+    const rpSpy = vi.spyOn({ rpc: mockRpc }, 'rpc')
+
+    act(() => fireTabSwitch())  // warning
+    act(() => result.current.resumeFromWarning())
+    act(() => fireTabSwitch())  // auto-submit
+
+    await waitFor(() => expect(result.current.status).toBe('auto'))
+
+    // The auto-submit must carry the phase that was active when questions loaded.
+    const call = mockRpc.mock.calls.find(([name]) => name === 'grade_quiz_attempt')
+    expect(call[1].p_phase).toBe('html')
+
+    rpSpy.mockRestore()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 4. Error handling
+// ---------------------------------------------------------------------------
+describe('error handling', () => {
+  it('sets error state when grade_quiz_attempt RPC fails', async () => {
+    mockRpc.mockImplementation((rpcName) => {
+      if (rpcName === 'get_quiz_questions') return Promise.resolve({ data: MOCK_QUESTIONS, error: null })
+      if (rpcName === 'grade_quiz_attempt') return Promise.resolve({ data: null, error: { message: 'DB error' } })
+    })
+
+    const { result } = renderHook(() =>
+      useQuizSession('html', UNLOCKED_PROFILE, vi.fn())
+    )
+    await waitFor(() => expect(result.current.status).toBe('active'))
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.index).toBe(1))
+    act(() => result.current.handleSelect(0))
+    await waitFor(() => expect(result.current.status).toBe('error'))
+    expect(result.current.errorMsg).toBe('DB error')
+  })
+})
 </file>
 
 <file path="src/index.css">
@@ -1316,6 +2118,47 @@ export const ROLE_LABELS = {
 // Pass threshold for quizzes (must match grade_quiz_attempt RPC in SQL).
 export const QUIZ_PASS_THRESHOLD = 80
 export const QUIZ_TIME_LIMIT_SECONDS = 45
+
+// Topics an internee must master before taking each phase quiz.
+// Kept in code (not DB) — curriculum is managed by the dev team, not dynamically.
+export const PHASE_ROADMAP = {
+  html: [
+    { title: 'Semantic Structure', desc: 'header, main, section, article, nav, aside, footer' },
+    { title: 'Forms & Input Types', desc: 'input types, labels, fieldset, validation attributes' },
+    { title: 'Tables & Lists', desc: 'thead/tbody, accessible tables, ordered/definition lists' },
+    { title: 'Media Elements', desc: 'img, video, audio, picture, srcset, lazy loading' },
+    { title: 'Accessibility & ARIA', desc: 'roles, aria-label, tabindex, keyboard navigation' },
+    { title: 'SEO Fundamentals', desc: 'meta tags, heading hierarchy, Open Graph, canonical' },
+    { title: 'HTML5 APIs', desc: 'data-* attributes, contenteditable, localStorage' },
+  ],
+  css: [
+    { title: 'Box Model & Display', desc: 'block/inline, box-sizing, margin, padding, overflow' },
+    { title: 'Flexbox', desc: 'flex-direction, justify-content, align-items, flex-grow/shrink' },
+    { title: 'CSS Grid', desc: 'grid-template, fr units, grid-area, auto-placement' },
+    { title: 'Responsive Design', desc: 'media queries, rem/em, viewport units, clamp()' },
+    { title: 'CSS Custom Properties', desc: '--variable declaration, var() usage, :root scope' },
+    { title: 'Animations & Transitions', desc: 'transition, @keyframes, animation, will-change' },
+    { title: 'Specificity & Architecture', desc: 'selector weight, BEM naming, utility-first (Tailwind)' },
+  ],
+  js: [
+    { title: 'DOM Manipulation', desc: 'querySelector, createElement, classList, innerHTML vs textContent' },
+    { title: 'Events & Delegation', desc: 'addEventListener, bubbling, event.target, preventDefault' },
+    { title: 'Async JavaScript', desc: 'callbacks, Promises, async/await, Promise.all, error flow' },
+    { title: 'Array Methods', desc: 'map, filter, reduce, find, flat, Object.entries/keys' },
+    { title: 'ES6+ Features', desc: 'destructuring, spread, optional chaining, nullish coalescing' },
+    { title: 'Error Handling', desc: 'try/catch, custom Error classes, global error handlers' },
+    { title: 'Fetch & REST APIs', desc: 'fetch, response.json(), headers, CRUD patterns' },
+  ],
+  liquid: [
+    { title: 'Liquid Syntax', desc: '{{ output }}, {% tags %}, filters, whitespace control with -' },
+    { title: 'Shopify Theme Architecture', desc: 'layout/, templates/, sections/, snippets/ file roles' },
+    { title: 'JSON Templates', desc: 'content_for_index, sections_for_all_pages, preset structures' },
+    { title: 'Section Schema & Settings', desc: 'schema settings, block types, presets, translations' },
+    { title: 'Metafields & Metaobjects', desc: 'namespace.key syntax, types, referencing in Liquid output' },
+    { title: 'AJAX & Dynamic Features', desc: 'Storefront API, predictive search, AJAX cart with fetch' },
+    { title: 'Theme Performance', desc: 'render tag, lazy sections, asset_url, Lighthouse optimisation' },
+  ],
+}
 </file>
 
 <file path="tailwind.config.js">
@@ -1363,44 +2206,6 @@ dist-ssr
 *.sln
 *.sw?
 .env
-</file>
-
-<file path="package.json">
-{
-  "name": "stackgate",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview"
-  },
-  "dependencies": {
-    "@supabase/supabase-js": "^2.105.4",
-    "lucide-react": "^1.14.0",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "react-router-dom": "^7.15.0",
-    "resend": "^6.12.3",
-    "tslib": "^2.8.1"
-  },
-  "devDependencies": {
-    "@eslint/js": "^10.0.1",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.1",
-    "autoprefixer": "^10.5.0",
-    "eslint": "^10.3.0",
-    "eslint-plugin-react-hooks": "^7.1.1",
-    "eslint-plugin-react-refresh": "^0.5.2",
-    "globals": "^17.6.0",
-    "postcss": "^8.5.14",
-    "tailwindcss": "^3.4.19",
-    "vite": "^8.0.12"
-  }
-}
 </file>
 
 <file path="src/components/layout/DashboardLayout.jsx">
@@ -1591,16 +2396,16 @@ export default function DashboardLayout({ title, children }) {
 // Landing page after login. The sidebar/navbar shell now lives in
 // DashboardLayout — this file is just the page CONTENT.
 // =============================================================================
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  ListChecks, GraduationCap, Users, ChevronRight,
-  Code2, Palette, Zap, Layers,
+  ListChecks, GraduationCap, Users, ChevronRight, ChevronDown,
+  Code2, Palette, Zap, Layers, BookOpen, Clock,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
-import { PHASE_LABELS, ROLE_LABELS, PHASES } from '../utils/constants'
+import { PHASE_LABELS, ROLE_LABELS, PHASES, PHASE_ROADMAP } from '../utils/constants'
 import DashboardLayout from '../components/layout/DashboardLayout'
 
-// Phase icon mapping — single source so it stays consistent across the app.
 const PHASE_ICONS = {
   html: Code2,
   css: Palette,
@@ -1665,6 +2470,17 @@ export default function Dashboard() {
         </section>
       )}
 
+      {/* Deadline tracker + Learning roadmap — internees with an active phase */}
+      {profile?.role === 'internee' && profile?.current_phase && (
+        <section className="mb-6 space-y-4">
+          <DeadlineCard
+            phase={profile.current_phase}
+            phaseDeadlines={profile.phase_deadlines}
+          />
+          <RoadmapPanel phase={profile.current_phase} />
+        </section>
+      )}
+
       {/* Quick-action tiles */}
       <section>
         <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">
@@ -1697,7 +2513,8 @@ export default function Dashboard() {
   )
 }
 
-// ---- Local subcomponent ----------------------------------------------------
+// ---- Local subcomponents ----------------------------------------------------
+
 function ActionTile({ icon: Icon, title, desc, onClick }) {
   return (
     <button
@@ -1715,494 +2532,134 @@ function ActionTile({ icon: Icon, title, desc, onClick }) {
     </button>
   )
 }
-</file>
 
-<file path="src/pages/Quiz.jsx">
-// =============================================================================
-// QUIZ RUNNER  (full-screen focus mode)
-// -----------------------------------------------------------------------------
-// Route: /quiz/:phase
-//
-// FLOW:
-//   loading    → fetch 15 random questions via the get_quiz_questions RPC
-//   active     → one question at a time: Canvas question + 4 option buttons +
-//                45s timer. Selecting an option (or timer expiring) records
-//                the answer and advances.
-//   submitting → all 15 answered → grade_quiz_attempt RPC grades server-side
-//   done       → result screen (score, pass/fail, per-question review)
-//   auto       → terminated by tab-switch enforcement (Path B). Shows a clear
-//                message and the partial score. Always fails.
-//   error      → friendly message + a way back
-//
-// TAB-SWITCH ENFORCEMENT (Path B — warning, then strike):
-//   1st tab switch → quiz pauses (kind of — UI shows a full-screen warning).
-//                    Continue button re-enters the quiz.
-//   2nd tab switch → quiz auto-submits with current answers, marked as
-//                    auto_submitted on the server. Always fails regardless
-//                    of partial score. Admin/owner sees this in /notifications.
-//
-//   The "tab switch" is really document.visibilitychange — covers both
-//   clicking another browser tab AND Alt+Tab to another app.
-//
-// SECURITY:
-//   The correct answers never reach this component. get_quiz_questions returns
-//   questions WITHOUT correct_option_index; grade_quiz_attempt does the marking
-//   on the server.
-// =============================================================================
-import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import {
-  Loader2, ShieldAlert, CheckCircle2, XCircle, Home, RotateCcw,
-  ShieldCheck, AlertTriangle, Ban,
-} from 'lucide-react'
-import { useAuth } from '../context/AuthContext'
-import { supabase } from '../lib/supabaseClient'
-import { PHASES, PHASE_LABELS } from '../utils/constants'
-import CanvasQuestion from '../components/quiz/CanvasQuestion'
-import QuizTimer from '../components/quiz/QuizTimer'
+// Renders only when a deadline entry exists for the current phase.
+// Reads phase_deadlines[phase].{ start_date?, deadline } from the JSONB column.
+function DeadlineCard({ phase, phaseDeadlines }) {
+  const entry = phaseDeadlines?.[phase]
+  if (!entry?.deadline) return null
 
-const VALID_PHASES = Object.values(PHASES)
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  const deadline = new Date(entry.deadline)
+  const start = entry.start_date ? new Date(entry.start_date) : null
 
-export default function Quiz() {
-  const { phase } = useParams()
-  const navigate = useNavigate()
-  const { profile, refreshProfile } = useAuth()
+  const daysRemaining = Math.ceil((deadline - today) / 86400000)
+  const isOverdue = daysRemaining < 0
 
-  const [status, setStatus] = useState('loading')
-  // status: loading | active | warning | submitting | done | auto | error
-  const [errorMsg, setErrorMsg] = useState('')
-  const [questions, setQuestions] = useState([])
-  const [index, setIndex] = useState(0)
-  const [answers, setAnswers] = useState({})
-  const [result, setResult] = useState(null)
-
-  // Refs (not state) so they don't trigger re-renders.
-  const tabSwitchesRef = useRef(0)
-  const startTimeRef = useRef(null)
-  const advancingRef = useRef(false)
-  const didLoadRef = useRef(false)
-
-  // Latest values used by event handlers — refs so the visibility listener
-  // (registered ONCE at mount) always reads the freshest data without needing
-  // to re-bind. Updated on every render via the syncing useEffect below.
-  const statusRef = useRef(status)
-  const answersRef = useRef(answers)
-  const currentRef = useRef(null)
-  useEffect(() => {
-    statusRef.current = status
-    answersRef.current = answers
-    currentRef.current = questions[index]
-  })
-
-  // Reset guards when phase / question changes.
-  useEffect(() => { advancingRef.current = false }, [index])
-  useEffect(() => { didLoadRef.current = false }, [phase])
-
-  // ---- load questions ------------------------------------------------------
-  useEffect(() => {
-    let cancelled = false
-
-    const load = async () => {
-      if (didLoadRef.current) return
-
-      setStatus('loading')
-      setErrorMsg('')
-
-      if (!VALID_PHASES.includes(phase)) {
-        setErrorMsg('Unknown quiz phase.')
-        setStatus('error')
-        return
-      }
-      if (profile?.role === 'internee') {
-        const unlocked = profile?.unlocked_phases || []
-        if (!unlocked.includes(phase)) {
-          setErrorMsg(`The ${PHASE_LABELS[phase]} phase is locked. Pass the previous phase to unlock it.`)
-          setStatus('error')
-          return
-        }
-      }
-
-      const { data, error } = await supabase.rpc('get_quiz_questions', { p_phase: phase })
-      if (cancelled) return
-
-      if (error) {
-        setErrorMsg(error.message || 'Could not load questions.')
-        setStatus('error')
-        return
-      }
-      if (!data || data.length === 0) {
-        setErrorMsg('No questions are available for this phase yet.')
-        setStatus('error')
-        return
-      }
-
-      didLoadRef.current = true
-      setQuestions(data)
-      setIndex(0)
-      setAnswers({})
-      tabSwitchesRef.current = 0
-      startTimeRef.current = Date.now()
-      setStatus('active')
-    }
-
-    load()
-    return () => { cancelled = true }
-  }, [phase, profile])
-
-  // ---- submit (shared by normal end + auto-submit) ------------------------
-  const submitQuiz = async (finalAnswers, autoSubmitted = false, reason = null) => {
-    setStatus(autoSubmitted ? 'submitting' : 'submitting')
-    const totalTime = startTimeRef.current
-      ? Math.round((Date.now() - startTimeRef.current) / 1000)
-      : null
-
-    const { data, error } = await supabase.rpc('grade_quiz_attempt', {
-      p_phase: phase,
-      p_answers: finalAnswers,
-      p_cheat_signals: { tab_switches: tabSwitchesRef.current },
-      p_total_time_seconds: totalTime,
-      p_auto_submitted: autoSubmitted,
-      p_auto_submit_reason: reason,
-    })
-
-    if (error) {
-      setErrorMsg(error.message || 'Could not submit the quiz.')
-      setStatus('error')
-      return
-    }
-
-    setResult(data)
-    setStatus(autoSubmitted ? 'auto' : 'done')
-    if (data?.passed) refreshProfile?.()
+  let progress = null
+  if (start) {
+    const totalDays = Math.ceil((deadline - start) / 86400000)
+    const elapsed = Math.ceil((today - start) / 86400000)
+    progress = totalDays > 0 ? Math.min(100, Math.max(0, (elapsed / totalDays) * 100)) : 100
   }
 
-  // ---- record an answer and advance --------------------------------------
-  const advance = (selectedIndex) => {
-    if (status !== 'active' || advancingRef.current) return
-    const current = questions[index]
-    if (!current) return
-    advancingRef.current = true
+  const urgency = isOverdue || daysRemaining <= 3 ? 'red' : daysRemaining <= 7 ? 'amber' : 'emerald'
+  const barColor   = { red: 'bg-red-500',   amber: 'bg-amber-400',   emerald: 'bg-emerald-500'   }[urgency]
+  const textColor  = { red: 'text-red-400', amber: 'text-amber-400', emerald: 'text-emerald-400' }[urgency]
+  const borderColor = { red: 'border-red-500/20', amber: 'border-amber-500/20', emerald: 'border-zinc-800' }[urgency]
+  const bgColor    = { red: 'bg-red-500/5',  amber: 'bg-amber-500/5',  emerald: 'bg-zinc-900'      }[urgency]
 
-    const updated = { ...answers, [current.id]: selectedIndex }
-    setAnswers(updated)
-
-    if (index + 1 < questions.length) {
-      setIndex((i) => i + 1)
-    } else {
-      submitQuiz(updated, false, null)
-    }
-  }
-
-  const handleSelect = (optionIndex) => advance(optionIndex)
-  const handleExpire = () => advance(-1)
-
-  // ---- TAB-SWITCH ENFORCEMENT (the new piece) -----------------------------
-  useEffect(() => {
-    // Build a "complete answers" object for a partial submission. For
-    // questions the intern hadn't answered yet, we record -1 (skipped).
-    const buildFinalAnswers = () => {
-      const complete = { ...answersRef.current }
-      for (const q of questions) {
-        if (!(q.id in complete)) complete[q.id] = -1
-      }
-      return complete
-    }
-
-    const onVis = () => {
-      if (!document.hidden) return
-      // Only react during an active quiz or on the first warning screen.
-      const s = statusRef.current
-      if (s !== 'active' && s !== 'warning') return
-
-      tabSwitchesRef.current += 1
-
-      if (tabSwitchesRef.current === 1) {
-        // First strike — show warning.
-        setStatus('warning')
-      } else {
-        // Second strike — auto-submit. Use the latest answers from the ref.
-        submitQuiz(buildFinalAnswers(), true, 'tab_switch_x2')
-      }
-    }
-
-    document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
-    // We intentionally only depend on `questions` (used by buildFinalAnswers).
-    // All other reads use refs so the handler stays stable.
-  }, [questions])
-
-  // =========================================================================
-  // RENDER
-  // =========================================================================
-
-  // ---- loading ----
-  if (status === 'loading') {
-    return (
-      <FullScreen>
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-          <p className="text-zinc-400 text-sm">Loading {PHASE_LABELS[phase] || ''} questions…</p>
-        </div>
-      </FullScreen>
-    )
-  }
-
-  // ---- error ----
-  if (status === 'error') {
-    return (
-      <FullScreen>
-        <div className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-8 text-center">
-          <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4">
-            <ShieldAlert className="w-6 h-6 text-red-400" />
-          </div>
-          <h2 className="text-lg font-semibold text-zinc-100 mb-2">Can't start this quiz</h2>
-          <p className="text-sm text-zinc-400 mb-6">{errorMsg}</p>
-          <button
-            onClick={() => navigate('/quizzes')}
-            className="inline-flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold px-4 py-2.5 rounded-lg transition"
-          >
-            Back to quizzes
-          </button>
-        </div>
-      </FullScreen>
-    )
-  }
-
-  // ---- submitting ----
-  if (status === 'submitting') {
-    return (
-      <FullScreen>
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-          <p className="text-zinc-400 text-sm">Grading your answers…</p>
-        </div>
-      </FullScreen>
-    )
-  }
-
-  // ---- WARNING screen (after first tab switch) ----
-  if (status === 'warning') {
-    return (
-      <FullScreen>
-        <div className="max-w-md w-full bg-amber-500/5 border border-amber-500/30 rounded-2xl p-8 text-center">
-          <div className="w-14 h-14 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-4">
-            <AlertTriangle className="w-7 h-7 text-amber-400" />
-          </div>
-          <h2 className="text-xl font-bold text-zinc-100 mb-2">Tab switch detected</h2>
-          <p className="text-sm text-zinc-400 mb-1">
-            Leaving the quiz window is treated as suspicious activity.
-          </p>
-          <p className="text-sm text-amber-300 font-medium mb-6">
-            This is your only warning. The next tab switch will end the quiz immediately.
-          </p>
-          <button
-            onClick={() => setStatus('active')}
-            className="inline-flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold px-5 py-2.5 rounded-lg transition"
-          >
-            I understand — resume quiz
-          </button>
-        </div>
-      </FullScreen>
-    )
-  }
-
-  // ---- AUTO-SUBMITTED screen (after second tab switch) ----
-  if (status === 'auto' && result) {
-    return (
-      <FullScreen>
-        <div className="max-w-md w-full">
-          <div className="bg-red-500/5 border border-red-500/30 rounded-2xl p-8 text-center mb-4">
-            <div className="w-14 h-14 rounded-2xl bg-red-500/10 flex items-center justify-center mx-auto mb-4">
-              <Ban className="w-7 h-7 text-red-400" />
-            </div>
-            <p className="text-sm text-red-400 font-medium mb-1">Quiz terminated</p>
-            <h2 className="text-2xl font-bold text-zinc-100 mb-2">
-              Auto-submitted
-            </h2>
-            <p className="text-sm text-zinc-400 mb-2">
-              You switched away from the quiz window after a warning. The attempt has been
-              submitted and recorded.
-            </p>
-            <p className="text-xs text-zinc-500 mt-4">
-              Score: <span className="text-zinc-300 font-medium">{result.score}%</span> ·
-              Result: <span className="text-red-400 font-medium">Did not pass</span>
-            </p>
-          </div>
-          <button
-            onClick={() => navigate('/dashboard')}
-            className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold py-2.5 rounded-lg transition"
-          >
-            <Home className="w-4 h-4" /> Back to dashboard
-          </button>
-        </div>
-      </FullScreen>
-    )
-  }
-
-  // ---- DONE (normal completion) ----
-  if (status === 'done' && result) {
-    const passed = result.passed
-    return (
-      <FullScreen>
-        <div className="max-w-2xl w-full">
-          <div className={`
-            rounded-2xl border p-8 text-center mb-4
-            ${passed
-              ? 'bg-emerald-500/5 border-emerald-500/30'
-              : 'bg-red-500/5 border-red-500/30'}
-          `}>
-            <div className={`
-              w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4
-              ${passed ? 'bg-emerald-500/10' : 'bg-red-500/10'}
-            `}>
-              {passed
-                ? <CheckCircle2 className="w-7 h-7 text-emerald-400" />
-                : <XCircle className="w-7 h-7 text-red-400" />}
-            </div>
-            <p className={`text-sm font-medium mb-1 ${passed ? 'text-emerald-400' : 'text-red-400'}`}>
-              {passed ? 'Phase passed' : 'Not passed yet'}
-            </p>
-            <h2 className="text-4xl font-bold tracking-tight text-zinc-100">
-              {result.score}%
-            </h2>
-            <p className="text-zinc-400 text-sm mt-2">
-              {result.correct} of {result.total} correct · {result.threshold}% needed to pass
-            </p>
-            {passed && result.next_phase_unlocked && (
-              <p className="text-emerald-300 text-sm mt-3">
-                🎉 You've unlocked the {PHASE_LABELS[result.next_phase_unlocked]} phase.
-              </p>
-            )}
-            {!passed && (
-              <p className="text-zinc-500 text-sm mt-3">
-                Review the questions below, then retake the quiz when you're ready.
-              </p>
-            )}
-          </div>
-
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 mb-4">
-            <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">
-              Question review
-            </h3>
-            <ul className="space-y-2">
-              {questions.map((q, i) => {
-                const correct = result.results?.[q.id] === true
-                return (
-                  <li key={q.id} className="flex items-start gap-3 text-sm">
-                    {correct
-                      ? <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
-                      : <XCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />}
-                    <span className="text-zinc-300">
-                      <span className="text-zinc-500">Q{i + 1}.</span> {q.question_text}
-                    </span>
-                  </li>
-                )
-              })}
-            </ul>
-          </div>
-
-          <div className="flex gap-3">
-            <button
-              onClick={() => navigate('/dashboard')}
-              className="flex-1 flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold py-2.5 rounded-lg transition"
-            >
-              <Home className="w-4 h-4" /> Dashboard
-            </button>
-            <button
-              onClick={() => navigate(0)}
-              className="flex-1 flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold py-2.5 rounded-lg transition"
-            >
-              <RotateCcw className="w-4 h-4" /> Retake quiz
-            </button>
-          </div>
-        </div>
-      </FullScreen>
-    )
-  }
-
-  // ---- ACTIVE (the actual quiz) ----
-  const current = questions[index]
-  if (status === 'active' && current) {
-    return (
-      <FullScreen>
-        <div
-          className="max-w-2xl w-full"
-          onContextMenu={(e) => e.preventDefault()}
-          style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
-        >
-          {/* Progress + proctor pill */}
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-sm text-zinc-400">
-              Question <span className="text-zinc-100 font-semibold">{index + 1}</span> of {questions.length}
-            </p>
-            <span className="flex items-center gap-1.5 text-xs text-zinc-500">
-              <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-              {PHASE_LABELS[phase]} · proctored
-            </span>
-          </div>
-
-          {/* Progress bar */}
-          <div className="h-1 w-full bg-zinc-800 rounded-full overflow-hidden mb-4">
-            <div
-              className="h-full bg-emerald-500 rounded-full transition-all duration-300"
-              style={{ width: `${(index / questions.length) * 100}%` }}
-            />
-          </div>
-
-          {/* Soft anti-cheat reminder — only shown if no strikes yet */}
-          {tabSwitchesRef.current === 0 && (
-            <div className="text-xs text-zinc-500 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 mb-4 flex items-center gap-2">
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
-              Do not switch tabs or windows. One warning, then auto-submit.
-            </div>
-          )}
-
-          {/* Timer */}
-          <div className="mb-5">
-            <QuizTimer
-              seconds={current.time_limit_seconds || 45}
-              questionKey={current.id}
-              onExpire={handleExpire}
-            />
-          </div>
-
-          {/* Canvas question */}
-          <CanvasQuestion question={current.question_text} code={current.code_snippet} />
-
-          {/* Options */}
-          <div className="grid grid-cols-1 gap-2.5 mt-5">
-            {current.options.map((opt) => (
-              <button
-                key={opt.id}
-                onClick={() => handleSelect(opt.id)}
-                className="text-left bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 rounded-xl px-4 py-3 text-sm text-zinc-200 transition"
-              >
-                {opt.text}
-              </button>
-            ))}
-          </div>
-
-          <p className="text-xs text-zinc-600 mt-4 text-center">
-            Selecting an answer moves you to the next question. You can't go back.
-          </p>
-        </div>
-      </FullScreen>
-    )
-  }
-
-  // ---- fallback ----
   return (
-    <FullScreen>
-      <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-    </FullScreen>
+    <div className={`${bgColor} border ${borderColor} rounded-xl p-5`}>
+      <div className="flex items-center gap-2 mb-4">
+        <Clock className="w-4 h-4 text-zinc-500" />
+        <p className="text-xs text-zinc-500 uppercase tracking-wider font-semibold">
+          {PHASE_LABELS[phase]} Deadline
+        </p>
+      </div>
+
+      <div className="flex items-end justify-between mb-4">
+        <div>
+          <p className={`text-3xl font-bold tracking-tight ${textColor}`}>
+            {isOverdue ? 'Overdue' : daysRemaining}
+            {!isOverdue && (
+              <span className="text-sm font-normal text-zinc-500 ml-2">
+                {daysRemaining === 1 ? 'day' : 'days'} remaining
+              </span>
+            )}
+          </p>
+          <p className="text-xs text-zinc-500 mt-1">
+            Due {deadline.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
+          </p>
+        </div>
+        {isOverdue && (
+          <span className="text-xs bg-red-500/10 text-red-400 border border-red-500/20 px-2 py-1 rounded-lg font-medium">
+            Past due
+          </span>
+        )}
+      </div>
+
+      {progress !== null && (
+        <div>
+          <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+          <p className="text-xs text-zinc-600 mt-1.5">
+            {Math.round(progress)}% of time elapsed
+            {start && (
+              <span>
+                {' '}· started {start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+              </span>
+            )}
+          </p>
+        </div>
+      )}
+    </div>
   )
 }
 
-// ---- Centered full-screen wrapper (no sidebar) -----------------------------
-function FullScreen({ children }) {
+// Collapsible checklist of topics for the current phase.
+// Topic data comes from PHASE_ROADMAP constant — no DB fetch needed.
+function RoadmapPanel({ phase }) {
+  const [open, setOpen] = useState(false)
+  const topics = PHASE_ROADMAP?.[phase] ?? []
+
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4">
-      {children}
+    <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-zinc-800/50 transition"
+      >
+        <div className="flex items-center gap-2.5">
+          <BookOpen className="w-4 h-4 text-emerald-400" />
+          <span className="font-medium text-zinc-100 text-sm">
+            {PHASE_LABELS[phase]} Learning Roadmap
+          </span>
+          <span className="text-xs text-zinc-600 bg-zinc-800 px-2 py-0.5 rounded-full">
+            {topics.length} topics
+          </span>
+        </div>
+        <ChevronDown
+          className={`w-4 h-4 text-zinc-500 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {open && (
+        <div className="border-t border-zinc-800 px-5 py-4">
+          <ul className="space-y-3">
+            {topics.map((topic, i) => (
+              <li key={i} className="flex items-start gap-3">
+                <div className="w-5 h-5 rounded-full border border-zinc-700 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <span className="text-[10px] font-medium text-zinc-500">{i + 1}</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-zinc-200">{topic.title}</p>
+                  {topic.desc && (
+                    <p className="text-xs text-zinc-500 mt-0.5">{topic.desc}</p>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-zinc-600 mt-4 pt-3 border-t border-zinc-800">
+            Master these topics before taking the {PHASE_LABELS[phase]} quiz.
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -2452,6 +2909,43 @@ export default function Register() {
 }
 </file>
 
+<file path="package.json">
+{
+  "name": "stackgate",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.105.4",
+    "lucide-react": "^1.14.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
+    "react-router-dom": "^7.15.0",
+    "tslib": "^2.8.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "autoprefixer": "^10.5.0",
+    "eslint": "^10.3.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "globals": "^17.6.0",
+    "postcss": "^8.5.14",
+    "tailwindcss": "^3.4.19",
+    "vite": "^8.0.12"
+  }
+}
+</file>
+
 <file path="src/App.jsx">
 // =============================================================================
 // APP ROOT
@@ -2625,6 +3119,304 @@ export const useAuth = () => {
   const context = useContext(AuthContext)
   if (!context) throw new Error('useAuth must be used inside <AuthProvider>')
   return context
+}
+</file>
+
+<file path="src/pages/Quiz.jsx">
+// =============================================================================
+// QUIZ RUNNER  (full-screen focus mode)
+// -----------------------------------------------------------------------------
+// Route: /quiz/:phase
+//
+// This component is pure render logic. All state machine behaviour lives in
+// useQuizSession — see src/hooks/useQuizSession.js for full documentation on
+// the flow, tab-switch enforcement, and security model.
+// =============================================================================
+import { useParams, useNavigate } from 'react-router-dom'
+import {
+  Loader2, ShieldAlert, CheckCircle2, XCircle, Home, RotateCcw,
+  ShieldCheck, AlertTriangle, Ban,
+} from 'lucide-react'
+import { useAuth } from '../context/AuthContext'
+import { PHASE_LABELS } from '../utils/constants'
+import { useQuizSession } from '../hooks/useQuizSession'
+import CanvasQuestion from '../components/quiz/CanvasQuestion'
+import QuizTimer from '../components/quiz/QuizTimer'
+
+export default function Quiz() {
+  const { phase }    = useParams()
+  const navigate     = useNavigate()
+  const { profile, refreshProfile } = useAuth()
+
+  const {
+    status,
+    errorMsg,
+    questions,
+    index,
+    result,
+    tabSwitchesRef,
+    handleSelect,
+    handleExpire,
+    resumeFromWarning,
+  } = useQuizSession(phase, profile, refreshProfile)
+
+  // ---- loading ----
+  if (status === 'loading') {
+    return (
+      <FullScreen>
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+          <p className="text-zinc-400 text-sm">Loading {PHASE_LABELS[phase] || ''} questions…</p>
+        </div>
+      </FullScreen>
+    )
+  }
+
+  // ---- error ----
+  if (status === 'error') {
+    return (
+      <FullScreen>
+        <div className="max-w-md w-full bg-zinc-900 border border-zinc-800 rounded-2xl p-8 text-center">
+          <div className="w-12 h-12 rounded-xl bg-red-500/10 border border-red-500/20 flex items-center justify-center mx-auto mb-4">
+            <ShieldAlert className="w-6 h-6 text-red-400" />
+          </div>
+          <h2 className="text-lg font-semibold text-zinc-100 mb-2">Can't start this quiz</h2>
+          <p className="text-sm text-zinc-400 mb-6">{errorMsg}</p>
+          <button
+            onClick={() => navigate('/quizzes')}
+            className="inline-flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold px-4 py-2.5 rounded-lg transition"
+          >
+            Back to quizzes
+          </button>
+        </div>
+      </FullScreen>
+    )
+  }
+
+  // ---- submitting ----
+  if (status === 'submitting') {
+    return (
+      <FullScreen>
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+          <p className="text-zinc-400 text-sm">Grading your answers…</p>
+        </div>
+      </FullScreen>
+    )
+  }
+
+  // ---- warning (first tab switch) ----
+  if (status === 'warning') {
+    return (
+      <FullScreen>
+        <div className="max-w-md w-full bg-amber-500/5 border border-amber-500/30 rounded-2xl p-8 text-center">
+          <div className="w-14 h-14 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center mx-auto mb-4">
+            <AlertTriangle className="w-7 h-7 text-amber-400" />
+          </div>
+          <h2 className="text-xl font-bold text-zinc-100 mb-2">Tab switch detected</h2>
+          <p className="text-sm text-zinc-400 mb-1">
+            Leaving the quiz window is treated as suspicious activity.
+          </p>
+          <p className="text-sm text-amber-300 font-medium mb-6">
+            This is your only warning. The next tab switch will end the quiz immediately.
+          </p>
+          <button
+            onClick={resumeFromWarning}
+            className="inline-flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold px-5 py-2.5 rounded-lg transition"
+          >
+            I understand — resume quiz
+          </button>
+        </div>
+      </FullScreen>
+    )
+  }
+
+  // ---- auto-submitted (second tab switch) ----
+  if (status === 'auto' && result) {
+    return (
+      <FullScreen>
+        <div className="max-w-md w-full">
+          <div className="bg-red-500/5 border border-red-500/30 rounded-2xl p-8 text-center mb-4">
+            <div className="w-14 h-14 rounded-2xl bg-red-500/10 flex items-center justify-center mx-auto mb-4">
+              <Ban className="w-7 h-7 text-red-400" />
+            </div>
+            <p className="text-sm text-red-400 font-medium mb-1">Quiz terminated</p>
+            <h2 className="text-2xl font-bold text-zinc-100 mb-2">Auto-submitted</h2>
+            <p className="text-sm text-zinc-400 mb-2">
+              You switched away from the quiz window after a warning. The attempt has been
+              submitted and recorded.
+            </p>
+            <p className="text-xs text-zinc-500 mt-4">
+              Score: <span className="text-zinc-300 font-medium">{result.score}%</span> ·
+              Result: <span className="text-red-400 font-medium">Did not pass</span>
+            </p>
+          </div>
+          <button
+            onClick={() => navigate('/dashboard')}
+            className="w-full flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold py-2.5 rounded-lg transition"
+          >
+            <Home className="w-4 h-4" /> Back to dashboard
+          </button>
+        </div>
+      </FullScreen>
+    )
+  }
+
+  // ---- done (normal completion) ----
+  if (status === 'done' && result) {
+    const passed = result.passed
+    return (
+      <FullScreen>
+        <div className="max-w-2xl w-full">
+          <div className={`
+            rounded-2xl border p-8 text-center mb-4
+            ${passed ? 'bg-emerald-500/5 border-emerald-500/30' : 'bg-red-500/5 border-red-500/30'}
+          `}>
+            <div className={`
+              w-14 h-14 rounded-2xl flex items-center justify-center mx-auto mb-4
+              ${passed ? 'bg-emerald-500/10' : 'bg-red-500/10'}
+            `}>
+              {passed
+                ? <CheckCircle2 className="w-7 h-7 text-emerald-400" />
+                : <XCircle     className="w-7 h-7 text-red-400" />}
+            </div>
+            <p className={`text-sm font-medium mb-1 ${passed ? 'text-emerald-400' : 'text-red-400'}`}>
+              {passed ? 'Phase passed' : 'Not passed yet'}
+            </p>
+            <h2 className="text-4xl font-bold tracking-tight text-zinc-100">{result.score}%</h2>
+            <p className="text-zinc-400 text-sm mt-2">
+              {result.correct} of {result.total} correct · {result.threshold}% needed to pass
+            </p>
+            {passed && result.next_phase_unlocked && (
+              <p className="text-emerald-300 text-sm mt-3">
+                🎉 You've unlocked the {PHASE_LABELS[result.next_phase_unlocked]} phase.
+              </p>
+            )}
+            {!passed && (
+              <p className="text-zinc-500 text-sm mt-3">
+                Review the questions below, then retake the quiz when you're ready.
+              </p>
+            )}
+          </div>
+
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-5 mb-4">
+            <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+              Question review
+            </h3>
+            <ul className="space-y-2">
+              {questions.map((q, i) => {
+                const correct = result.results?.[q.id] === true
+                return (
+                  <li key={q.id} className="flex items-start gap-3 text-sm">
+                    {correct
+                      ? <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0 mt-0.5" />
+                      : <XCircle      className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />}
+                    <span className="text-zinc-300">
+                      <span className="text-zinc-500">Q{i + 1}.</span> {q.question_text}
+                    </span>
+                  </li>
+                )
+              })}
+            </ul>
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              onClick={() => navigate('/dashboard')}
+              className="flex-1 flex items-center justify-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 font-semibold py-2.5 rounded-lg transition"
+            >
+              <Home className="w-4 h-4" /> Dashboard
+            </button>
+            <button
+              onClick={() => navigate(0)}
+              className="flex-1 flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold py-2.5 rounded-lg transition"
+            >
+              <RotateCcw className="w-4 h-4" /> Retake quiz
+            </button>
+          </div>
+        </div>
+      </FullScreen>
+    )
+  }
+
+  // ---- active ----
+  const current = questions[index]
+  if (status === 'active' && current) {
+    return (
+      <FullScreen>
+        <div
+          className="max-w-2xl w-full"
+          onContextMenu={(e) => e.preventDefault()}
+          style={{ userSelect: 'none', WebkitUserSelect: 'none' }}
+        >
+          <div className="flex items-center justify-between mb-3">
+            <p className="text-sm text-zinc-400">
+              Question <span className="text-zinc-100 font-semibold">{index + 1}</span> of {questions.length}
+            </p>
+            <span className="flex items-center gap-1.5 text-xs text-zinc-500">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+              {PHASE_LABELS[phase]} · proctored
+            </span>
+          </div>
+
+          <div className="h-1 w-full bg-zinc-800 rounded-full overflow-hidden mb-4">
+            <div
+              className="h-full bg-emerald-500 rounded-full transition-all duration-300"
+              style={{ width: `${(index / questions.length) * 100}%` }}
+            />
+          </div>
+
+          {tabSwitchesRef.current === 0 && (
+            <div className="text-xs text-zinc-500 bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-2 mb-4 flex items-center gap-2">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-400 flex-shrink-0" />
+              Do not switch tabs or windows. One warning, then auto-submit.
+            </div>
+          )}
+
+          <div className="mb-5">
+            <QuizTimer
+              seconds={current.time_limit_seconds || 45}
+              questionKey={current.id}
+              onExpire={handleExpire}
+            />
+          </div>
+
+          <CanvasQuestion question={current.question_text} code={current.code_snippet} />
+
+          <div className="grid grid-cols-1 gap-2.5 mt-5">
+            {current.options.map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => handleSelect(opt.id)}
+                className="text-left bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 rounded-xl px-4 py-3 text-sm text-zinc-200 transition"
+              >
+                {opt.text}
+              </button>
+            ))}
+          </div>
+
+          <p className="text-xs text-zinc-600 mt-4 text-center">
+            Selecting an answer moves you to the next question. You can't go back.
+          </p>
+        </div>
+      </FullScreen>
+    )
+  }
+
+  // ---- fallback ----
+  return (
+    <FullScreen>
+      <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+    </FullScreen>
+  )
+}
+
+function FullScreen({ children }) {
+  return (
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex items-center justify-center p-4">
+      {children}
+    </div>
+  )
 }
 </file>
 
